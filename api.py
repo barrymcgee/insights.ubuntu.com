@@ -1,18 +1,14 @@
 # Core
 import datetime
 import calendar
-import re
 import json
-import textwrap
 from urllib.parse import urlsplit
 
 # Third party
-import dateutil.parser
 import requests_cache
 
 # Local
-from helpers import join_ids, build_url
-import local_data
+import helpers
 
 
 API_URL = 'https://admin.insights.ubuntu.com/wp-json/wp/v2'
@@ -36,7 +32,7 @@ def get(endpoint, parameters={}):
     If it gets an error, it will use the cached response, if it exists.
     """
 
-    url = build_url(API_URL, endpoint, parameters)
+    url = helpers.build_url(API_URL, endpoint, parameters)
 
     response = cached_session.get(url)
 
@@ -45,143 +41,77 @@ def get(endpoint, parameters={}):
     return response
 
 
-def _embed_post_data(post):
-    if '_embedded' not in post:
-        return post
-    embedded = post['_embedded']
-    post['author'] = _normalise_user(embedded['author'][0])
-    post['category'] = local_data.get_category_by_id(
-        post['categories'][0]
-    )
-    if post['topic']:
-        post['topics'] = local_data.get_topic_by_id(
-            post['topic'][0]
-        )
-    if 'groups' not in post and post['group']:
-        post['groups'] = local_data.get_group_by_id(
-            int(post['group'][0])
-        )
-    return post
-
-
-def _normalise_user(user):
-    link = user['link']
-    path = urlsplit(link).path
-    user['relative_link'] = path
-    return user
-
-
-def _normalise_posts(posts, groups_id=None):
-    for post in posts:
-        if post['excerpt']['rendered']:
-            # replace headings (e.g. h1) to paragraphs
-            post['excerpt']['rendered'] = re.sub(
-                r"h\d>", "p>",
-                post['excerpt']['rendered']
-            )
-
-            # remove images
-            post['excerpt']['rendered'] = re.sub(
-                r"<img(.[^>]*)?", "",
-                post['excerpt']['rendered']
-            )
-
-            # shorten to 250 chars, on a wordbreak and with a ...
-            post['excerpt']['rendered'] = textwrap.shorten(
-                post['excerpt']['rendered'],
-                width=250,
-                placeholder="&hellip;"
-            )
-
-            # if there is a [...] replace with ...
-            post['excerpt']['rendered'] = re.sub(
-                r"\[\&hellip;\]", "&hellip;",
-                post['excerpt']['rendered']
-            )
-        post = _normalise_post(post, groups_id=groups_id)
-    return posts
-
-
-def _normalise_post(post, groups_id=None):
-    link = post['link']
-    path = urlsplit(link).path
-    post['relative_link'] = path
-    post['formatted_date'] = datetime.datetime.strftime(
-        dateutil.parser.parse(post['date']),
-        "%d %B %Y"
-    ).lstrip("0").replace(" 0", " ")
-
-    if groups_id:
-        post['groups'] = local_data.get_group_by_id(groups_id)
-
-    post = _embed_post_data(post)
-    return post
-
-
-def search_posts(search):
-    response = get('posts', {'_embed': True, 'search': search})
-    posts = _normalise_posts(json.loads(response.text))
-
-    return posts
-
-
-def get_topic(slug):
-    response = get('topic', {'slug': slug})
-
-    return json.loads(response.text)
-
-
 def get_tag(slug):
     response = get('tags', {'slug': slug})
 
     return json.loads(response.text)
 
 
-def get_post(slug):
-    response = get('posts', {'_embed': True, 'slug': slug})
-    post = json.loads(response.text)[0]
-    post['tags'] = get_tag_details_from_post(post['id'])
-    post = _normalise_post(post)
-    post['related_posts'] = get_related_posts(post)
+def get_users(slugs):
+    response = get('users', {'slug': ','.join(slugs)})
 
-    return post
+    users = response.json()
 
+    for user in users:
+        user['link'] = urlsplit(user['link']).path
 
-def get_author(slug):
-    response = get('users', {'_embed': True, 'slug': slug})
-    user = json.loads(response.text)[0]
-    user = _normalise_user(user)
-    user['recent_posts'] = get_user_recent_posts(user['id'])
-
-    return user
+    return users
 
 
-def get_posts(groups_id=None, categories=[], tags=[], page=1, per_page=12):
+def get_posts(
+    page=1, per_page=12, search_query='', sticky=None,
+    slugs=[], group_ids=[], category_ids=[], tag_ids=[], author_ids=[],
+    before=None, after=None
+):
+    """
+    Query posts from the wordpress API, optionally filtering by
+    the parameters offered by the API.
+
+    Transform the returned posts in the following ways:
+    - Add a "summary" by reformatting the "excerpt"
+    - Make the link relative
+    - Format the date as e.g. "1 January 2008"
+    - Add the author information, including making the link relative
+    - Expand category information
+    """
+
+    # Retrieve posts
     response = get(
         'posts',
         {
             '_embed': True,
             'per_page': per_page,
             'page': page,
-            'group': groups_id,
-            'categories': join_ids(categories),
-            'tags': join_ids(tags)
+            'search': search_query,
+            'group': helpers.join_ids(group_ids),
+            'categories': helpers.join_ids(category_ids),
+            'tags': helpers.join_ids(tag_ids),
+            'author': helpers.join_ids(author_ids),
+            'before': before,
+            'after': after
         }
     )
+    posts = response.json()
 
-    headers = response.headers
-    metadata = {
-        'current_page': page or 1,
-        'total_pages': headers.get('X-WP-TotalPages'),
-        'total_posts': headers.get('X-WP-Total'),
-    }
+    # Format posts
+    for post in posts:
+        if 'excerpt' in post and 'rendered' in post['excerpt']:
+            post['summary'] = helpers.format_excerpt(
+                post['excerpt']['rendered']
+            )
 
-    posts = _normalise_posts(
-        json.loads(response.text),
-        groups_id=groups_id
+        post['date'] = helpers.format_date(post['date'])
+        post['link'] = urlsplit(post['link']).path
+        post['author'] = post['_embedded']['author'][0]
+        post['author']['link'] = urlsplit(post['author']['link']).path
+
+    return (
+        posts,
+        {
+            'pages': response.headers.get('X-WP-TotalPages'),
+            'total': response.headers.get('X-WP-Total')
+        }
     )
-
-    return posts, metadata
 
 
 def get_archives(
@@ -189,12 +119,18 @@ def get_archives(
     month=None, group_id=None, group_name='Archives',
     categories=[], tags=[], page=1, per_page=100
 ):
+    """
+
+    """
+
     result = {}
     startmonth = 1
     endmonth = 12
+
     if month:
         startmonth = month
         endmonth = month
+
     last_day = calendar.monthrange(int(year), int(endmonth))[1]
     after = datetime.datetime(int(year), int(startmonth), 1)
     before = datetime.datetime(int(year), int(endmonth), last_day)
@@ -204,69 +140,18 @@ def get_archives(
         after=after.isoformat()
     )
 
-    posts = _normalise_posts(json.loads(response.text))
+    posts = json.loads(response.text)
+
     if month:
         result["date"] = after.strftime("%B") + ' ' + str(year)
     else:
         result["date"] = str(year)
+
     if group_name != "Archives":
         group_name = group_name + ' archives'
+
     result["title"] = group_name
     result["posts"] = posts
     result["count"] = len(posts)
+
     return result
-
-
-def get_related_posts(post):
-    response = get(
-        'tags',
-        {
-            'embed': True,
-            'per_page': 3,
-            'post': post['id']
-        }
-    )
-    tags = json.loads(response.text)
-
-    tag_ids = [tag['id'] for tag in tags]
-    posts, meta = get_posts(tags=tag_ids)
-    posts = _normalise_posts(posts)
-
-    return posts
-
-
-def get_user_recent_posts(user_id, limit=5):
-    response = get(
-        'posts',
-        {
-            'embed': True,
-            'author': user_id,
-            'per_page': limit,
-        }
-    )
-    posts = _normalise_posts(json.loads(response.text))
-
-    return posts
-
-
-def get_tag_details_from_post(post_id):
-    response = get('tags', {'post': post_id})
-    tags = json.loads(response.text)
-
-    return tags
-
-
-def get_featured_post(groups_id=None, categories=[], per_page=1):
-    response = get(
-        'posts',
-        {
-            '_embed': True,
-            'sticky': True,
-            'per_page': per_page,
-            'group': groups_id,
-            'categories': join_ids(categories)
-        }
-    )
-    posts = _normalise_posts(json.loads(response.text), groups_id=groups_id)
-
-    return posts[0] if posts else None

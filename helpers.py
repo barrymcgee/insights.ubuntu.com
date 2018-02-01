@@ -1,6 +1,12 @@
-import feedparser
+# Core
 import logging
+import re
+import textwrap
 from datetime import datetime
+
+# Third-party
+import dateutil.parser
+import feedparser
 from requests_cache import CachedSession
 from time import mktime
 from urllib.parse import urlencode
@@ -12,6 +18,50 @@ expiry_seconds = 300
 cached_request = CachedSession(
     expire_after=expiry_seconds,
 )
+
+
+def format_date(date):
+    """
+    Format a date as e.g. "1 January 2008"
+    """
+
+    return dateutil.parser.parse(date).strftime("%-d %B %Y")
+
+
+def format_excerpt(excerpt):
+    """
+    Format an excerpt from a post:
+    - Shorten to 250 chars
+    - Remove images
+    - Make headings into paragraphs
+    """
+
+    # shorten to 250 chars, on a wordbreak and with a ...
+    excerpt = textwrap.shorten(
+        excerpt,
+        width=250,
+        placeholder="&hellip;"
+    )
+
+    # replace headings (e.g. h1) to paragraphs
+    excerpt = re.sub(
+        r"h\d>", "p>",
+        excerpt
+    )
+
+    # remove images
+    excerpt = re.sub(
+        r"<img(.[^>]*)?", "",
+        excerpt
+    )
+
+    # if there is a [...] replace with ...
+    excerpt = re.sub(
+        r"\[\&hellip;\]", "&hellip;",
+        excerpt
+    )
+
+    return excerpt
 
 
 def join_ids(ids):

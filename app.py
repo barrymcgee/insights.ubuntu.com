@@ -7,7 +7,8 @@ from flask import request
 
 # Local
 import api
-from helpers import get_rss_feed_content
+import helpers
+import local_data
 from werkzeug.routing import BaseConverter
 
 
@@ -27,79 +28,107 @@ app.url_map.converters['regex'] = RegexConverter
 
 @app.route('/')
 def homepage():
-    search = request.args.get('search')
+    """
+    Return search results, or homepage content
+    """
 
-    if search:
-        result = {}
+    search_query = request.args.get('q')
 
-        posts = api.search_posts(search)
+    if search_query:
+        page = flask.request.args.get('page') or 1
 
-        result["posts"] = posts
-        result["count"] = len(posts)
-        result["query"] = search
-        return flask.render_template('search.html', result=result)
+        posts, meta = api.get_posts(search=search_query, page=page)
 
-    page = flask.request.args.get('page')
-    posts, metadata = api.get_posts(page=page, per_page=13)
+        return flask.render_template(
+            'search.html',
+            query=search_query,
+            total=meta['total'],
+            pages=meta['pages'],
+            page=page
+        )
 
-    webinars = get_rss_feed_content(
+    posts, meta = api.get_posts(per_page=13)
+
+    webinars = helpers.get_rss_feed_content(
         'https://www.brighttalk.com/channel/6793/feed'
     )
 
-    featured_post = api.get_featured_post()
+    featured_posts, meta = api.get_posts(sticky=True, per_page=1)
+    featured_post = featured_posts[0] if featured_posts else None
+
     homepage_posts = []
 
+    # Format posts
     for post in posts:
-        if post['id'] != featured_post['id']:
-            homepage_posts.append(post)
+        # Skip the featured post, if found
+        if featured_post and post['id'] == featured_post['id']:
+            continue
+
+        # Add group data for first group
+        if post['group']:
+            post['group'] = local_data.get_group_by_id(
+                int(post['group'][0])
+            )
+
+        # Expand categories
+        post['category'] = local_data.get_category_by_id(
+            post['categories'][0]
+        )
+
+        # Add the post to the list
+        homepage_posts.append(post)
 
     return flask.render_template(
         'index.html',
         posts=homepage_posts[:12],
         featured_post=featured_post,
         webinars=webinars,
-        **metadata
     )
 
 
 @app.route('/<group>/')
 @app.route('/<group>/<category>/')
-def group_category(group=[], category='all'):
-    groups = []
-    categories = []
+def group_category(group_slug, category_slug='all'):
+    if group_slug == 'press-centre':
+        group_slug = 'canonical-announcements'
 
-    if group:
-        if group == 'press-centre':
-            group = 'canonical-announcements'
+    group = api.get_group_by_slug(group_slug)
 
-        groups = api.get_group_by_slug(group)
+    if not group:
+        flask.abort(404)
 
-        if not groups:
-            return flask.render_template(
-                '404.html'
-            )
-        group_details = api.get_group_details(group)  # read the json file
+    group = api.get_group_details(group)  # read the json file
 
-    groups_id = int(groups['id']) if groups else None
+    group_ids = [group['id']]
 
-    categories = api.get_category_by_slug(category)
-    categories_id = [categories['id']] if categories['id'] else []
+    if category_slug:
+        category = api.get_category_by_slug(category_slug)
 
-    page = flask.request.args.get('page')
-    posts, metadata = api.get_posts(
-        groups_id=groups_id,
-        categories=categories_id,
+        if not category:
+            flask.abort(404)
+
+        category_id = [category['id']]
+
+    page = flask.request.args.get('page') or 1
+    posts, meta = api.get_posts(
+        groups_id=group_ids,
+        categories=[category_id] if category_id else [],
         page=page,
         per_page=12
     )
 
+    for post in posts:
+        post['groups'] = [group]
+        post['category'] = local_data.get_category_by_id(post['categories'][0])
+
     return flask.render_template(
         'group.html',
         posts=posts,
-        group=groups if groups else None,
-        group_details=group_details,
+        group=group,
         category=category if category else None,
-        **metadata
+        page=page,
+        pages=meta['pages'],
+        total=meta['total'],
     )
 
 
@@ -187,12 +216,39 @@ def archives_group_year_month(group, year, month):
     '/<slug>/'
 )
 def post(year, month, day, slug):
-    return flask.render_template('post.html', post=api.get_post(slug))
+    posts = api.get_posts(slugs=[slug])
+
+    if not posts:
+        flask.abort(404)
+
+    post = posts[0]
+
+    related_posts, meta = api.get_posts(per_page=3, post_id=post['id'])
+
+    return flask.render_template(
+        'post.html',
+        post=post,
+        tags=api.get_tag_details_from_post(post['id']),
+        related_posts=related_posts
+    )
 
 
 @app.route('/author/<slug>/')
 def user(slug):
-    return flask.render_template('author.html', author=api.get_author(slug))
+    authors = api.get_users(slugs=[slug])
+
+    if not authors:
+        flask.abort(404)
+
+    author = authors[0]
+
+    recent_posts, meta = api.get_posts(author_ids=[author['id']], per_page=5)
+
+    return flask.render_template(
+        'author.html',
+        author=author,
+        recent_posts=recent_posts
+    )
 
 
 @app.route('/admin/')
