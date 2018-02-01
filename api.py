@@ -84,7 +84,7 @@ TOPICBYID = {
 
 # Utility functions
 
-def _get(endpoint, parameters={}):
+def get(endpoint, parameters={}):
     """
     Retrieve the response from the requests cache.
     If the cache has expired then it will attempt to update the cache.
@@ -168,26 +168,26 @@ def _normalise_post(post, groups_id=None):
 
 
 def search_posts(search):
-    response = _get('posts', {'_embed': True, 'search': search})
+    response = get('posts', {'_embed': True, 'search': search})
     posts = _normalise_posts(json.loads(response.text))
 
     return posts
 
 
 def get_topic(slug):
-    response = _get('topic', {'slug': slug})
+    response = get('topic', {'slug': slug})
 
     return json.loads(response.text)
 
 
 def get_tag(slug):
-    response = _get('tags', {'slug': slug})
+    response = get('tags', {'slug': slug})
 
     return json.loads(response.text)
 
 
 def get_post(slug):
-    response = _get('posts', {'_embed': True, 'slug': slug})
+    response = get('posts', {'_embed': True, 'slug': slug})
     post = json.loads(response.text)[0]
     post['tags'] = get_tag_details_from_post(post['id'])
     post = _normalise_post(post)
@@ -197,7 +197,7 @@ def get_post(slug):
 
 
 def get_author(slug):
-    response = _get('users', {'_embed': True, 'slug': slug})
+    response = get('users', {'_embed': True, 'slug': slug})
     user = json.loads(response.text)[0]
     user = _normalise_user(user)
     user['recent_posts'] = get_user_recent_posts(user['id'])
@@ -206,7 +206,7 @@ def get_author(slug):
 
 
 def get_posts(groups_id=None, categories=[], tags=[], page=1, per_page=12):
-    response = _get(
+    response = get(
         'posts',
         {
             '_embed': True,
@@ -248,7 +248,7 @@ def get_archives(
     after = datetime.datetime(int(year), int(startmonth), 1)
     before = datetime.datetime(int(year), int(endmonth), last_day)
 
-    response = _get(
+    response = get(
         'posts',
         {
             '_embed': True,
@@ -274,7 +274,7 @@ def get_archives(
 
 
 def get_related_posts(post):
-    response = _get(
+    response = get(
         'tags',
         {
             'embed': True,
@@ -292,7 +292,7 @@ def get_related_posts(post):
 
 
 def get_user_recent_posts(user_id, limit=5):
-    response = _get(
+    response = get(
         'posts',
         {
             'embed': True,
@@ -306,14 +306,14 @@ def get_user_recent_posts(user_id, limit=5):
 
 
 def get_tag_details_from_post(post_id):
-    response = _get('tags', {'post': post_id})
+    response = get('tags', {'post': post_id})
     tags = json.loads(response.text)
 
     return tags
 
 
 def get_featured_post(groups_id=None, categories=[], per_page=1):
-    response = _get(
+    response = get(
         'posts',
         {
             '_embed': True,
